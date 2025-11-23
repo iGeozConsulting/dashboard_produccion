@@ -16,12 +16,13 @@ st.set_page_config(
 
 # --- Funciones de Ajuste ---
 def exp_func(x, a, b):
+    # a: Producción inicial (Qi), b: Factor de declinación
     return a * np.exp(b * x)
 
 def poly2_func(x, a, b, c):
     return a * x**2 + b * x + c
 
-# --- 1. FUNCIÓN CENTRAL DE CÁLCULO ---
+# --- 1. FUNCIÓN CENTRAL DE CÁLCULO (ORIGINAL) ---
 def realizar_calculos_chan(df):
     """
     Realiza todos los cálculos y ajustes de curvas una sola vez.
@@ -37,14 +38,17 @@ def realizar_calculos_chan(df):
         wor = np.divide(agua, petroleo, out=np.full_like(agua, np.nan, dtype=float), where=petroleo != 0)
         derivada = np.gradient(wor, dias)
         
+        # Validación original: WOR > 0 y Derivada > 0
         valid_idx = np.isfinite(wor) & np.isfinite(derivada) & (wor > 0) & (derivada > 0)
         if np.sum(valid_idx) < 3:
             return None # No hay suficientes datos
 
         # Realizar ajustes de curvas
         popt_exp, popt_wor, popt_derivada = None, None, None
+        # Ajuste Exponencial (p0 original: [Qi, -1e-3])
         try: popt_exp, _ = curve_fit(exp_func, dias, petroleo, p0=[petroleo[0], -1e-3], maxfev=10000)
         except RuntimeError: pass
+        # Ajustes WOR y Derivada
         try: popt_wor, _ = curve_fit(poly2_func, dias[valid_idx], wor[valid_idx])
         except RuntimeError: pass
         try: popt_derivada, _ = curve_fit(poly2_func, dias[valid_idx], derivada[valid_idx])
@@ -59,33 +63,41 @@ def realizar_calculos_chan(df):
     except Exception:
         return None
 
-# --- 2. FUNCIÓN PARA GENERAR IMAGEN ESTÁTICA (PNG) ---
-def generar_imagen_matplotlib(datos, file_name):
+# --- 2. FUNCIÓN PARA GENERAR IMAGEN ESTÁTICA (PNG) (MODIFICADA para Toggle) ---
+def generar_imagen_matplotlib(datos, file_name, mostrar_ajustes_chan):
     """
-    Genera la imagen de diagnóstico COMPLETA con Matplotlib para ser descargada.
+    Genera la imagen de diagnóstico COMPLETA con Matplotlib.
+    Controla las líneas de tendencia WOR/WOR'.
     """
     dias, petroleo, wor, derivada = datos['dias'], datos['petroleo'], datos['wor'], datos['derivada']
     valid_idx = datos['valid_idx']
     popt_exp, popt_wor, popt_derivada = datos['popt_exp'], datos['popt_wor'], datos['popt_derivada']
+    
+    dias_fit_range = np.linspace(dias.min(), dias.max(), 100)
 
     fig, ax = plt.subplots(1, 2, figsize=(18, 8), dpi=150)
     fig.suptitle(f'Diagnóstico de Chan - Pozo: {file_name}', fontsize=18, fontweight='bold')
 
-    # Subplot 1
+    # Subplot 1: Declinación (Ajuste exponencial siempre se muestra)
     ax[0].scatter(dias, petroleo, label='Producción Real', color='teal', alpha=0.7, s=30)
     if popt_exp is not None:
-        ax[0].plot(dias, exp_func(dias, *popt_exp), label='Ajuste Exponencial', color='red', linestyle='--')
+        # Se asegura que la polilínea sea suave
+        ax[0].plot(dias_fit_range, exp_func(dias_fit_range, *popt_exp), label=f'Ajuste Exp. (b={popt_exp[1]:.4f})', color='red', linestyle='--')
     ax[0].set_title('Declinación de Producción de Petróleo', fontsize=14)
     ax[0].set_xlabel('Días Transcurridos'); ax[0].set_ylabel('Producción (BPD)'); ax[0].legend(); ax[0].grid(True, alpha=0.4)
 
-    # Subplot 2
+    # Subplot 2: Evolución WOR y Derivada
     dias_validos = dias[valid_idx]
     ax[1].scatter(dias_validos, wor[valid_idx], label='WOR Real', color='blue', alpha=0.7, s=30)
-    if popt_wor is not None:
-        ax[1].plot(dias_validos, poly2_func(dias_validos, *popt_wor), label='Ajuste WOR (Poly-2)', color='cornflowerblue')
     ax[1].scatter(dias_validos, derivada[valid_idx], label='Derivada WOR Real', color='green', alpha=0.7, s=30)
-    if popt_derivada is not None:
-        ax[1].plot(dias_validos, poly2_func(dias_validos, *popt_derivada), label='Ajuste Derivada (Poly-2)', color='lightgreen')
+    
+    # 💡 Lógica del Toggle para Matplotlib
+    if mostrar_ajustes_chan:
+        if popt_wor is not None:
+            ax[1].plot(dias_validos, poly2_func(dias_validos, *popt_wor), label='Ajuste WOR (Poly-2)', color='cornflowerblue')
+        if popt_derivada is not None:
+            ax[1].plot(dias_validos, poly2_func(dias_validos, *popt_derivada), label='Ajuste Derivada (Poly-2)', color='lightgreen')
+            
     ax[1].set_yscale('log')
     ax[1].set_title('Evolución de WOR y Derivada', fontsize=14)
     ax[1].set_xlabel('Días Transcurridos'); ax[1].set_ylabel('Valor (escala log)'); ax[1].legend(); ax[1].grid(True, which='both', alpha=0.4)
@@ -97,42 +109,65 @@ def generar_imagen_matplotlib(datos, file_name):
     plt.close(fig)
     return img_buffer
 
-# --- 3. FUNCIÓN PARA GRÁFICOS INTERACTIVOS (PLOTLY) ---
-def mostrar_graficos_plotly(datos):
-    """Muestra los gráficos interactivos de Plotly en el dashboard."""
+# --- 3. FUNCIÓN PARA GRÁFICOS INTERACTIVOS (PLOTLY) (MODIFICADA para Toggle) ---
+def mostrar_graficos_plotly(datos, mostrar_ajustes_chan):
+    """Muestra los gráficos interactivos de Plotly en el dashboard. Controla las líneas de tendencia WOR/WOR'."""
     dias, petroleo, wor, derivada = datos['dias'], datos['petroleo'], datos['wor'], datos['derivada']
     valid_idx = datos['valid_idx']
     popt_exp, popt_wor, popt_derivada = datos['popt_exp'], datos['popt_wor'], datos['popt_derivada']
     dias_validos = dias[valid_idx]
+    dias_fit_range = np.linspace(dias.min(), dias.max(), 100)
 
     # Gráfico 1: Declinación
     fig1 = go.Figure()
     fig1.add_trace(go.Scatter(x=dias, y=petroleo, mode='markers', name='Producción Real', marker_color='teal'))
-    # CORRECCIÓN AQUÍ
     if popt_exp is not None:
-        fig1.add_trace(go.Scatter(x=dias, y=exp_func(dias, *popt_exp), mode='lines', name='Ajuste Exponencial', line_color='red'))
+        fig1.add_trace(go.Scatter(x=dias_fit_range, y=exp_func(dias_fit_range, *popt_exp), mode='lines', name=f'Ajuste Exp. (b={popt_exp[1]:.4f})', line_color='red'))
     fig1.update_layout(title='1. Declinación de Producción de Petróleo', template='plotly_white')
     st.plotly_chart(fig1, use_container_width=True)
 
     # Gráfico 2: Evolución WOR y Derivada
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(x=dias_validos, y=wor[valid_idx], mode='markers', name='WOR Real', marker_color='blue'))
-    # CORRECCIÓN AQUÍ
-    if popt_wor is not None:
-        fig2.add_trace(go.Scatter(x=dias_validos, y=poly2_func(dias_validos, *popt_wor), mode='lines', name='Ajuste WOR', line_color='cornflowerblue'))
+    
+    # 💡 Lógica del Toggle para Plotly
+    if mostrar_ajustes_chan:
+        if popt_wor is not None:
+            fig2.add_trace(go.Scatter(x=dias_validos, y=poly2_func(dias_validos, *popt_wor), mode='lines', name='Ajuste WOR', line_color='cornflowerblue'))
+    
     fig2.add_trace(go.Scatter(x=dias_validos, y=derivada[valid_idx], mode='markers', name='Derivada WOR Real', marker_color='green'))
-    # CORRECCIÓN AQUÍ
-    if popt_derivada is not None:
-        fig2.add_trace(go.Scatter(x=dias_validos, y=poly2_func(dias_validos, *popt_derivada), mode='lines', name='Ajuste Derivada', line_color='lightgreen'))
+    
+    if mostrar_ajustes_chan:
+        if popt_derivada is not None:
+            fig2.add_trace(go.Scatter(x=dias_validos, y=poly2_func(dias_validos, *popt_derivada), mode='lines', name='Ajuste Derivada', line_color='lightgreen'))
+            
     fig2.update_layout(title="2. Evolución de WOR y Derivada (vs. Tiempo)", yaxis_type='log', template='plotly_white')
     st.plotly_chart(fig2, use_container_width=True)
     
     # Gráfico 3: Diagnóstico Chan
     fig3 = go.Figure(data=go.Scatter(x=wor[valid_idx], y=derivada[valid_idx], mode='markers', marker_color='purple'))
+    
+    if mostrar_ajustes_chan:
+        if popt_wor is not None and popt_derivada is not None:
+            wor_fit = poly2_func(dias_validos, *popt_wor)
+            derivada_fit = poly2_func(dias_validos, *popt_derivada)
+            
+            # Filtramos solo valores > 0 para el gráfico log-log
+            valid_chan_fit = (wor_fit > 0) & (derivada_fit > 0) & np.isfinite(wor_fit) & np.isfinite(derivada_fit)
+            
+            if np.sum(valid_chan_fit) > 1:
+                fig3.add_trace(go.Scatter(
+                    x=wor_fit[valid_chan_fit], 
+                    y=derivada_fit[valid_chan_fit], 
+                    mode='lines', 
+                    line_color='red', 
+                    name='Ajuste de Chan'
+                ))
+
     fig3.update_layout(title="3. Gráfico de Diagnóstico (WOR vs. Derivada')", xaxis_type='log', yaxis_type='log', template='plotly_white')
     st.plotly_chart(fig3, use_container_width=True)
 
-# --- INTERFAZ PRINCIPAL DEL DASHBOARD ---
+# --- INTERFAZ PRINCIPAL DEL DASHBOARD (MODIFICADA para Controles) ---
 st.title("🛢️ Dashboard de Producción y Análisis de Yacimientos")
 
 COL_FECHA, COL_BFPD, COL_PROD, COL_BAPD = 'FECHA', 'BFPD', 'PRODUCCION_PETROLEO', 'BAPD'
@@ -160,6 +195,7 @@ if uploaded_file is not None:
             if df.empty:
                 st.warning("El archivo no contiene filas con datos válidos después de la limpieza.")
             else:
+                
                 tab1, tab2 = st.tabs(["📊 Dashboard de Producción", "📈 Análisis de Curvas de Chan"])
 
                 with tab1:
@@ -176,11 +212,25 @@ if uploaded_file is not None:
                 with tab2:
                     st.header("📈 Análisis de Diagnóstico con Curvas de Chan")
                     
+                    # 💡 CHECKBOX para controlar las líneas de tendencia WOR/WOR'
+                    mostrar_ajustes_chan = st.checkbox(
+                        "Mostrar Ajustes Polinomiales (WOR/WOR')",
+                        value=True,
+                        help="Active o desactive las líneas de tendencia en los gráficos 2 y 3."
+                    )
+                    
+                    st.markdown("---")
+                    
+                    # Llamada a la función de cálculo (ORIGINAL)
                     datos_calculados = realizar_calculos_chan(df.copy())
                     
+                    st.subheader("2. Resultados y Gráficos")
                     if datos_calculados:
-                        st.info("La siguiente imagen estática está lista para ser descargada para tus reportes.")
-                        img_buffer = generar_imagen_matplotlib(datos_calculados, st.session_state.file_name)
+                        st.info("La imagen estática se actualiza con sus filtros. Use el checkbox para ocultar/mostrar las líneas de ajuste.")
+                        
+                        # Descarga de Imagen Estática
+                        img_buffer = generar_imagen_matplotlib(datos_calculados, st.session_state.file_name, mostrar_ajustes_chan)
+                        
                         st.download_button(
                             label="📥 Descargar Gráfico de Diagnóstico (PNG)",
                             data=img_buffer.getvalue(),
@@ -189,7 +239,9 @@ if uploaded_file is not None:
                         )
                         st.markdown("---")
                         st.subheader("Análisis Interactivo")
-                        mostrar_graficos_plotly(datos_calculados)
+                        
+                        # Gráficos Interactivos
+                        mostrar_graficos_plotly(datos_calculados, mostrar_ajustes_chan)
                     else:
                         st.warning("No se pudieron generar los análisis. No hay suficientes datos válidos (>0) en el archivo.")
 
